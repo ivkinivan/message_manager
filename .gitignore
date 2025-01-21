@@ -1,0 +1,17 @@
+*.o
+*.obj
+*.so
+*.dll
+*.a
+*.lib
+*.tmp
+*.log
+*.d
+*.dep
+demo_app
+test_runner
+!journal.txt
+!Makefile
+*.cproject
+*.project
+*.settings

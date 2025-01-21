@@ -1,0 +1,168 @@
+#include <iostream>
+#include "message_manager_lib.h"
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <string>
+#include <atomic>
+
+using namespace std;
+
+queue <message> message_queue;
+mutex queue_mutex;
+condition_variable queue_cv;
+atomic<bool> running(true); //флаг завершения
+atomic<bool> file_change(false); //флаг замены файла
+
+
+void message_writer(message_manager& msg_manager){
+	while(running || !message_queue.empty()){
+		unique_lock<mutex> lock(queue_mutex);
+		queue_cv.wait(lock, [] {return !message_queue.empty() || !running;});
+
+		while(!message_queue.empty()){
+			message msg = message_queue.front();
+			message_queue.pop();
+
+			lock.unlock();
+			msg_manager.print(msg);
+			lock.lock();
+		}
+	}
+}
+
+void help(){
+	cout<<"--------MESSAGE MANAGER COMMANDS--------"<<endl<<endl;
+	cout<<"   end program:                              -exit                                       "<<endl;
+	cout<<"   change file to filename:                  -changefile filename                        "<<endl;
+	cout<<"   change base importance level:             -changeimportance new_importance            "<<endl;
+	cout<<"   write message with importance level:      -msg some text | importance                 "<<endl;
+	cout<<"   write message with no importance level:   -msg some text                              "<<endl;
+	cout<<"   display this text:                        -help                      					"<<endl;
+	cout<<"   importance levels:                        low | medium | high              		    "<<endl<<endl;
+}
+
+
+int main(){
+	string filename, importance_level_st;
+	importance importance_level;
+	message_manager msg_manager;
+
+	//в цикле принимаем входные данные пока все не заработает
+	while(true){
+		cout<<"Enter output file name: ";
+		cin>>filename;
+		cout<<endl<<"Enter message base importance level: ";
+		cin>>importance_level_st;
+		try{
+			importance_level = to_importance(importance_level_st);
+			msg_manager.set_file_name(filename);
+			msg_manager.set_base_importance(importance_level);
+			break;
+		}catch (const std::runtime_error& e){
+			cout<<e.what()<<endl;
+		}
+	}
+
+	thread msg_writer_thread(message_writer, std::ref(msg_manager)); //поток на запись
+	help();
+	while(true){
+		string input;
+		getline(cin, input);
+
+		if(input == "-exit"){
+			running = false;
+			queue_cv.notify_all();
+			msg_writer_thread.join();
+			break;
+		}
+
+		if(input == "-help") help();
+
+		if(input.substr(0, 12) =="-changefile "){
+
+			string new_file_name = input.substr(12);
+
+			running = false; //переоткрываем поток, чтобы все сообщения из очереди записались в нужный файл
+			queue_cv.notify_all();
+			msg_writer_thread.join();
+
+			lock_guard<mutex> lock(queue_mutex);
+			while(!message_queue.empty()) message_queue.pop();
+
+			try{
+				msg_manager.set_file_name(new_file_name);
+				cout<<"filename was changed successfully"<<endl;
+			}catch (const std::runtime_error &e){
+				cout<<e.what()<<endl;
+			}
+
+			running = true;
+			msg_writer_thread = thread(message_writer, std::ref(msg_manager));
+
+		}
+
+		if(input.substr(0, 18)=="-changeimportance "){
+			running = false; //переоткрываем поток, чтобы избежать неправильной интерпретации тех сообщений что еще в очереди
+			queue_cv.notify_all();
+			msg_writer_thread.join();
+
+			lock_guard<mutex> lock(queue_mutex);
+			while(!message_queue.empty()) message_queue.pop();
+
+			try{
+				importance new_importance = to_importance(input.substr(18));
+				msg_manager.set_base_importance(new_importance);
+				cout<<"importance was changed successfully"<<endl;
+			}catch(std::runtime_error& e){
+				cout<<e.what()<<endl;
+			}
+
+			running = true;
+			msg_writer_thread = thread(message_writer, std::ref(msg_manager));
+		}
+
+		if(input.substr(0, 5)=="-msg "){
+			string text_msg;
+			string msg_importance_str;
+
+			if(input.find('|') != std::string::npos){
+				int separation_index = input.find('|');
+				text_msg = input.substr(5, separation_index-6);
+				msg_importance_str = input.substr(separation_index+2);
+
+				try{
+					importance importance_msg = to_importance(msg_importance_str);
+					message msg(text_msg, importance_msg);
+					{
+						std::lock_guard<std::mutex> lock(queue_mutex); //добавление в очередь
+						message_queue.push(msg);
+					}
+					queue_cv.notify_one();
+				}catch (std::runtime_error& e){
+					cout<<e.what()<<endl;
+				}
+
+
+			}else{
+				text_msg = input.substr(5);
+				try{
+					message msg(text_msg);
+					{
+						std::lock_guard<std::mutex> lock(queue_mutex); //добавление в очередь
+						message_queue.push(msg);
+					}
+					queue_cv.notify_one();
+				}catch (std::runtime_error& e){
+					cout<<e.what()<<endl;
+				}
+		}
+
+	}
+
+
+
+
+	}
+}
