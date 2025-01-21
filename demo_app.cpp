@@ -48,7 +48,7 @@ int main(){
 	string filename, importance_level_st;
 	importance importance_level;
 	message_manager msg_manager;
-
+	help();
 	//в цикле принимаем входные данные пока все не заработает
 	while(true){
 		cout<<"Enter output file name: ";
