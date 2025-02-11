@@ -9,11 +9,10 @@
 
 using namespace std;
 
-queue <message> message_queue;
+queue <pair<message, string>> message_queue;
 mutex queue_mutex;
 condition_variable queue_cv;
 atomic<bool> running(true); //флаг завершения
-atomic<bool> file_change(false); //флаг замены файла
 
 
 void message_writer(message_manager& msg_manager){
@@ -22,12 +21,37 @@ void message_writer(message_manager& msg_manager){
 		queue_cv.wait(lock, [] {return !message_queue.empty() || !running;});
 
 		while(!message_queue.empty()){
-			message msg = message_queue.front();
-			message_queue.pop();
-
-			lock.unlock();
-			msg_manager.print(msg);
-			lock.lock();
+			string operation_type = message_queue.front().second;
+			if(operation_type == "print"){
+				message msg = message_queue.front().first;
+				message_queue.pop();
+				lock.unlock();
+				msg_manager.print(msg);
+				lock.lock();
+			}else if(operation_type == "changefile"){
+				string new_file_name = message_queue.front().first.get_text();
+				message_queue.pop();
+				try{
+					lock.unlock();
+					msg_manager.set_file_name(new_file_name);
+					lock.lock();
+					cout<<"filename was changed successfully"<<endl;
+					}catch (const std::runtime_error &e){
+						cout<<e.what()<<endl;
+					}
+			}else if(operation_type == "changeimportance"){
+				string new_str_importance = message_queue.front().first.get_text();
+				message_queue.pop();
+				try{
+					importance new_importance = to_importance(new_str_importance);
+					lock.unlock();
+					msg_manager.set_base_importance(new_importance);
+					lock.lock();
+					cout<<"importance was changed successfully"<<endl;
+				}catch(std::runtime_error& e){
+					cout<<e.what()<<endl;
+				}
+			}
 		}
 	}
 }
@@ -81,46 +105,24 @@ int main(){
 		if(input == "-help") help();
 
 		if(input.substr(0, 12) =="-changefile "){
-
 			string new_file_name = input.substr(12);
-
-			running = false; //переоткрываем поток, чтобы все сообщения из очереди записались в нужный файл
-			queue_cv.notify_all();
-			msg_writer_thread.join();
-
-			lock_guard<mutex> lock(queue_mutex);
-			while(!message_queue.empty()) message_queue.pop();
-
-			try{
-				msg_manager.set_file_name(new_file_name);
-				cout<<"filename was changed successfully"<<endl;
-			}catch (const std::runtime_error &e){
-				cout<<e.what()<<endl;
+			message msg(new_file_name);
+			{
+				std::lock_guard<std::mutex> lock(queue_mutex); //добавление в очередь
+				message_queue.push({msg, "changefile"});
 			}
-
-			running = true;
-			msg_writer_thread = thread(message_writer, std::ref(msg_manager));
+			queue_cv.notify_one();
 
 		}
 
 		if(input.substr(0, 18)=="-changeimportance "){
-			running = false; //переоткрываем поток, чтобы избежать неправильной интерпретации тех сообщений что еще в очереди
-			queue_cv.notify_all();
-			msg_writer_thread.join();
-
-			lock_guard<mutex> lock(queue_mutex);
-			while(!message_queue.empty()) message_queue.pop();
-
-			try{
-				importance new_importance = to_importance(input.substr(18));
-				msg_manager.set_base_importance(new_importance);
-				cout<<"importance was changed successfully"<<endl;
-			}catch(std::runtime_error& e){
-				cout<<e.what()<<endl;
+			string new_importance = input.substr(18);
+			message msg(new_importance);
+			{
+				std::lock_guard<std::mutex> lock(queue_mutex); //добавление в очередь
+				message_queue.push({msg, "changeimportance"});
 			}
-
-			running = true;
-			msg_writer_thread = thread(message_writer, std::ref(msg_manager));
+			queue_cv.notify_one();
 		}
 
 		if(input.substr(0, 5)=="-msg "){
@@ -137,7 +139,7 @@ int main(){
 					message msg(text_msg, importance_msg);
 					{
 						std::lock_guard<std::mutex> lock(queue_mutex); //добавление в очередь
-						message_queue.push(msg);
+						message_queue.push({msg, "print"});
 					}
 					queue_cv.notify_one();
 				}catch (std::runtime_error& e){
@@ -151,7 +153,7 @@ int main(){
 					message msg(text_msg);
 					{
 						std::lock_guard<std::mutex> lock(queue_mutex); //добавление в очередь
-						message_queue.push(msg);
+						message_queue.push({msg, "print"});
 					}
 					queue_cv.notify_one();
 				}catch (std::runtime_error& e){
